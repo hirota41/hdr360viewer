@@ -109,7 +109,6 @@
         <div>Brightness: <input id="brightness" type="range" min="0.1" max="5" step="0.1" value="1.0"> <span id="bVal">1.00</span></div>
       </div>
       <div id="hdr-ui" style="display:none;">
-        <div>HDR Support : <span id="detectedDisplay" style="color:#0f0;">Checking...</span></div>
         <div>HDR Capacity: <input id="hdr-headroom" type="range" min="0" max="1000" step="1" value="410"> <span id="hVal">6.00</span>x</div>
         <div>Gainmap Weight: <span id="wVal" style="color:#0ff;">1.00</span></div>
       </div>
@@ -141,7 +140,6 @@
     const bVal = document.getElementById('bVal');
     const hVal = document.getElementById('hVal');
     const wVal = document.getElementById('wVal');
-    const detectedDisplayEl = document.getElementById('detectedDisplay');
     const toggleHdrInput = document.getElementById('toggle-hdr');
     const hdrToggleLabel = document.getElementById('hdrToggleLabel');
     const controlPanel = document.getElementById('control-panel');
@@ -165,15 +163,6 @@
     function getSystemHdrSupport() {
       // W3C標準の dynamic-range メディアクエリによる判定
       return !!(window.matchMedia && window.matchMedia('(dynamic-range: high)').matches);
-    }
-
-    function updateDetectedDisplayInfo() {
-      const isHdr = getSystemHdrSupport();
-      if (detectedDisplayEl) {
-        detectedDisplayEl.textContent = isHdr ? 'Supported' : 'SDR Only';
-        detectedDisplayEl.style.color = isHdr ? '#0f0' : '#fa0';
-      }
-      return isHdr;
     }
 
     const isSystemHdr = getSystemHdrSupport();
@@ -203,14 +192,27 @@
       }
     });
 
-    // ディスプレイのHDR切り替え監視
-    if (window.matchMedia) {
-      window.matchMedia('(dynamic-range: high)').addEventListener('change', updateDetectedDisplayInfo);
-    }
-    updateDetectedDisplayInfo();
-
     function setStatus(msg) {
       statusEl.textContent = msg;
+    }
+
+    function showHdrUnsupportedWarning() {
+      statusEl.style.color = '#ffaa00';
+      setStatus('[Warning] HDR display is not detected. True HDR output is unavailable.');
+
+      dropOverlay.style.cursor = 'default';
+      dropOverlay.style.background = 'rgba(25, 20, 0, 0.92)';
+      dropOverlay.style.borderColor = 'rgba(255, 170, 0, 0.8)';
+      dropOverlay.innerHTML = `
+        <div style="font-size: 2.2rem; margin-bottom: 12px;">📺</div>
+        <div style="font-weight: bold; font-size: 1.4rem; color: #ffcc00; margin-bottom: 10px;">
+          HDR Display Not Detected
+        </div>
+        <div style="font-size: 0.95rem; opacity: 0.9; max-width: 520px; line-height: 1.6; margin-bottom: 14px;">
+          HDR display output is disabled or not supported on this monitor, so HDR360 Viewer cannot be launched.<br>
+          Please <strong>enable HDR</strong> in your OS display settings or connect an <strong>HDR-capable monitor</strong>.
+        </div>
+      `;
     }
 
     function showWebGpuUnsupportedError(reason) {
@@ -235,60 +237,110 @@
       `;
     }
 
-    // ===== 1. WebGPU Core Setup =====
-    if (!navigator.gpu) {
-      showWebGpuUnsupportedError('navigator.gpu is undefined.');
-      return;
+    // ===== File Input & Drag & Drop Handling =====
+    function handleFileSelected(file) {
+      if (!device) {
+        if (!getSystemHdrSupport()) {
+          showHdrUnsupportedWarning();
+        }
+        return;
+      }
+      if (file) {
+        loadHDR(file);
+      }
     }
 
+    dropOverlay.addEventListener('click', () => {
+      if (!device) return;
+      fileInput.click();
+    });
+
+    btnOpenFile.addEventListener('click', () => {
+      if (!device) {
+        if (!getSystemHdrSupport()) {
+          showHdrUnsupportedWarning();
+        }
+        return;
+      }
+      fileInput.click();
+    });
+
+    fileInput.addEventListener('change', (e) => {
+      const file = e.target.files?.[0];
+      handleFileSelected(file);
+      fileInput.value = '';
+    });
+
+    window.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      if (device) dropOverlay.style.background = 'rgba(0,0,0,0.85)';
+    });
+
+    window.addEventListener('dragleave', (e) => {
+      e.preventDefault();
+      if (device) dropOverlay.style.background = 'rgba(0,0,0,0.75)';
+    });
+
+    window.addEventListener('drop', (e) => {
+      e.preventDefault();
+      if (device) dropOverlay.style.background = 'rgba(0,0,0,0.75)';
+      const file = e.dataTransfer?.files?.[0];
+      handleFileSelected(file);
+    });
+
+    // ===== Check HDR & WebGPU Setup =====
     let adapter = null;
     let device = null;
     let context = null;
     const format = 'rgba16float';
 
-    try {
-      adapter = await navigator.gpu.requestAdapter();
-      if (!adapter) {
-        showWebGpuUnsupportedError('Failed to find a compatible GPU adapter.');
-        return;
+    if (!getSystemHdrSupport()) {
+      showHdrUnsupportedWarning();
+      if (window.matchMedia) {
+        window.matchMedia('(dynamic-range: high)').addEventListener('change', (e) => {
+          if (e.matches) location.reload();
+        });
       }
+    } else if (!navigator.gpu) {
+      showWebGpuUnsupportedError('navigator.gpu is undefined.');
+    } else {
+      try {
+        adapter = await navigator.gpu.requestAdapter();
+        if (!adapter) {
+          showWebGpuUnsupportedError('Failed to find a compatible GPU adapter.');
+        } else {
+          const requiredLimits = {};
+          if (adapter.limits.maxTextureDimension2D >= 16384) {
+            requiredLimits.maxTextureDimension2D = 16384;
+          }
+          if (adapter.limits.maxBufferSize >= 1073741824) {
+            requiredLimits.maxBufferSize = 1073741824;
+          } else {
+            requiredLimits.maxBufferSize = adapter.limits.maxBufferSize;
+          }
+          if (adapter.limits.maxStorageBufferBindingSize >= 1073741824) {
+            requiredLimits.maxStorageBufferBindingSize = 1073741824;
+          } else {
+            requiredLimits.maxStorageBufferBindingSize = adapter.limits.maxStorageBufferBindingSize;
+          }
 
-      const requiredLimits = {};
-      if (adapter.limits.maxTextureDimension2D >= 16384) {
-        requiredLimits.maxTextureDimension2D = 16384;
+          device = await adapter.requestDevice({ requiredLimits });
+          context = canvas.getContext('webgpu');
+          if (!context) {
+            showWebGpuUnsupportedError('Failed to create WebGPU canvas context.');
+          } else {
+            context.configure({
+              device: device,
+              format: format,
+              usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+              colorSpace: 'srgb',
+              toneMapping: { mode: 'extended' }
+            });
+          }
+        }
+      } catch (err) {
+        showWebGpuUnsupportedError(err.message || String(err));
       }
-      if (adapter.limits.maxBufferSize >= 1073741824) {
-        requiredLimits.maxBufferSize = 1073741824;
-      } else {
-        requiredLimits.maxBufferSize = adapter.limits.maxBufferSize;
-      }
-      if (adapter.limits.maxStorageBufferBindingSize >= 1073741824) {
-        requiredLimits.maxStorageBufferBindingSize = 1073741824;
-      } else {
-        requiredLimits.maxStorageBufferBindingSize = adapter.limits.maxStorageBufferBindingSize;
-      }
-
-      device = await adapter.requestDevice({
-        requiredLimits: requiredLimits
-      });
-
-      context = canvas.getContext('webgpu');
-      if (!context) {
-        showWebGpuUnsupportedError('Failed to create WebGPU canvas context.');
-        return;
-      }
-
-      // 強制的なTrue HDRコンテキスト構成（Three.jsレンダラーの介入を許さない）
-      context.configure({
-        device: device,
-        format: format,
-        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
-        colorSpace: 'srgb',
-        toneMapping: { mode: 'extended' }
-      });
-    } catch (err) {
-      showWebGpuUnsupportedError(err.message || String(err));
-      return;
     }
 
     // ===== 2. Camera Setup (Math Only, No Three.js Renderer) =====
@@ -589,47 +641,6 @@
       };
     }
 
-    // ===== 4. File Input & Drag & Drop Handling =====
-    // Tap/Click to open file picker (iOS / Android / Desktop)
-    dropOverlay.addEventListener('click', () => {
-      if (!device) return;
-      fileInput.click();
-    });
-
-    btnOpenFile.addEventListener('click', () => {
-      if (!device) return;
-      fileInput.click();
-    });
-
-    fileInput.addEventListener('change', (e) => {
-      if (!device) return;
-      const file = e.target.files?.[0];
-      if (file) {
-        loadHDR(file);
-      }
-      fileInput.value = ''; // Allow re-selecting the same file
-    });
-
-    window.addEventListener('dragover', (e) => {
-      e.preventDefault();
-      if (device) dropOverlay.style.background = 'rgba(0,0,0,0.85)';
-    });
-
-    window.addEventListener('dragleave', (e) => {
-      e.preventDefault();
-      if (device) dropOverlay.style.background = 'rgba(0,0,0,0.75)';
-    });
-
-    window.addEventListener('drop', (e) => {
-      e.preventDefault();
-      if (!device) return;
-      dropOverlay.style.background = 'rgba(0,0,0,0.75)';
-      const file = e.dataTransfer?.files?.[0];
-      if (file) {
-        loadHDR(file);
-      }
-    });
-
     // Global pipeline & render loop state
     let activePipelineInfo = null;
     let renderLoopStarted = false;
@@ -918,7 +929,6 @@
       const hdrUi = document.getElementById('hdr-ui');
       if (activePipelineInfo.hasGainMap) {
         hdrUi.style.display = 'block';
-        updateDetectedDisplayInfo();
         const headroomInput = document.getElementById('hdr-headroom');
         if (headroomInput) {
           headroomInput.value = headroomToSlider(displayHeadroom);
@@ -928,7 +938,14 @@
         hdrUi.style.display = 'none';
       }
 
-      setStatus(`Ready. Raycasting active (${activePipelineInfo.type.toUpperCase()}${activePipelineInfo.hasGainMap ? ' + GAINMAP' : ''}).`);
+      if (activePipelineInfo.type === 'hdr') {
+        setStatus('• Format: Radiance HDR');
+      } else if (activePipelineInfo.hasGainMap) {
+        const capMax = activePipelineInfo.metadata?.hdrCapacityMax || 6.0;
+        setStatus(`• Format: UltraHDR JPEG (ISO 21496-1 Gain Map)\n• Max Boost: ${capMax.toFixed(2)}x (Content Max Capacity)`);
+      } else {
+        setStatus('• Format: Standard SDR JPEG');
+      }
 
       if (!renderLoopStarted) {
         renderLoopStarted = true;
