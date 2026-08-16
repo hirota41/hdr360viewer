@@ -146,6 +146,10 @@
     const hdrToggleLabel = document.getElementById('hdrToggleLabel');
     const controlPanel = document.getElementById('control-panel');
     const btnTogglePanel = document.getElementById('btn-toggle-panel');
+    const dropOverlay = document.getElementById('drop-overlay');
+    const debugUI = document.getElementById('debug-ui');
+    const fileInput = document.getElementById('file-input');
+    const btnOpenFile = document.getElementById('btn-open-file');
 
     // パネル開閉トグル
     btnTogglePanel.addEventListener('click', () => {
@@ -209,42 +213,83 @@
       statusEl.textContent = msg;
     }
 
-        // ===== 1. WebGPU Core Setup =====
-    if (!navigator.gpu) throw new Error('WebGPU not available');
-    const adapter = await navigator.gpu.requestAdapter();
+    function showWebGpuUnsupportedError(reason) {
+      statusEl.style.color = '#ff5555';
+      setStatus(`[Error] WebGPU unavailable: ${reason}`);
 
-        // デバイスがサポートする最大制限を確認し、要求する
-    const requiredLimits = {};
-    if (adapter.limits.maxTextureDimension2D >= 16384) {
-      requiredLimits.maxTextureDimension2D = 16384;
-    }
-    // バッファサイズの制限を引き上げる（大きなHDRデータ転送用）
-    if (adapter.limits.maxBufferSize >= 1073741824) {
-      requiredLimits.maxBufferSize = 1073741824;
-    } else {
-      requiredLimits.maxBufferSize = adapter.limits.maxBufferSize;
-    }
-    // writeTextureなどで必要なストレージサイズの制限も引き上げる
-    if (adapter.limits.maxStorageBufferBindingSize >= 1073741824) {
-      requiredLimits.maxStorageBufferBindingSize = 1073741824;
-    } else {
-      requiredLimits.maxStorageBufferBindingSize = adapter.limits.maxStorageBufferBindingSize;
+      dropOverlay.style.cursor = 'default';
+      dropOverlay.style.background = 'rgba(20, 0, 0, 0.9)';
+      dropOverlay.style.borderColor = 'rgba(255, 60, 60, 0.8)';
+      dropOverlay.innerHTML = `
+        <div style="font-size: 2.2rem; margin-bottom: 12px;">⚠️</div>
+        <div style="font-weight: bold; font-size: 1.4rem; color: #ff6666; margin-bottom: 10px;">
+          WebGPU Not Supported
+        </div>
+        <div style="font-size: 0.95rem; opacity: 0.9; max-width: 500px; line-height: 1.6; margin-bottom: 14px;">
+          Your browser or device does not currently support or enable WebGPU.<br>
+          Please use a modern browser (such as latest <strong>Google Chrome</strong>, <strong>Microsoft Edge</strong>, or <strong>Safari with WebGPU enabled</strong>) on a supported device.
+        </div>
+        <div style="font-size: 0.8rem; opacity: 0.6; font-family: monospace;">
+          Detail: ${reason}
+        </div>
+      `;
     }
 
-    const device = await adapter.requestDevice({
-      requiredLimits: requiredLimits
-    });
-    const context = canvas.getContext('webgpu');
-    
-    // 強制的なTrue HDRコンテキスト構成（Three.jsレンダラーの介入を許さない）
+    // ===== 1. WebGPU Core Setup =====
+    if (!navigator.gpu) {
+      showWebGpuUnsupportedError('navigator.gpu is undefined.');
+      return;
+    }
+
+    let adapter = null;
+    let device = null;
+    let context = null;
     const format = 'rgba16float';
-    context.configure({
-      device: device,
-      format: format,
-      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
-      colorSpace: 'srgb',
-      toneMapping: { mode: 'extended' }
-    });
+
+    try {
+      adapter = await navigator.gpu.requestAdapter();
+      if (!adapter) {
+        showWebGpuUnsupportedError('Failed to find a compatible GPU adapter.');
+        return;
+      }
+
+      const requiredLimits = {};
+      if (adapter.limits.maxTextureDimension2D >= 16384) {
+        requiredLimits.maxTextureDimension2D = 16384;
+      }
+      if (adapter.limits.maxBufferSize >= 1073741824) {
+        requiredLimits.maxBufferSize = 1073741824;
+      } else {
+        requiredLimits.maxBufferSize = adapter.limits.maxBufferSize;
+      }
+      if (adapter.limits.maxStorageBufferBindingSize >= 1073741824) {
+        requiredLimits.maxStorageBufferBindingSize = 1073741824;
+      } else {
+        requiredLimits.maxStorageBufferBindingSize = adapter.limits.maxStorageBufferBindingSize;
+      }
+
+      device = await adapter.requestDevice({
+        requiredLimits: requiredLimits
+      });
+
+      context = canvas.getContext('webgpu');
+      if (!context) {
+        showWebGpuUnsupportedError('Failed to create WebGPU canvas context.');
+        return;
+      }
+
+      // 強制的なTrue HDRコンテキスト構成（Three.jsレンダラーの介入を許さない）
+      context.configure({
+        device: device,
+        format: format,
+        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+        colorSpace: 'srgb',
+        toneMapping: { mode: 'extended' }
+      });
+    } catch (err) {
+      showWebGpuUnsupportedError(err.message || String(err));
+      return;
+    }
 
     // ===== 2. Camera Setup (Math Only, No Three.js Renderer) =====
     const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
@@ -545,21 +590,19 @@
     }
 
     // ===== 4. File Input & Drag & Drop Handling =====
-    const dropOverlay = document.getElementById('drop-overlay');
-    const debugUI = document.getElementById('debug-ui');
-    const fileInput = document.getElementById('file-input');
-    const btnOpenFile = document.getElementById('btn-open-file');
-
     // Tap/Click to open file picker (iOS / Android / Desktop)
     dropOverlay.addEventListener('click', () => {
+      if (!device) return;
       fileInput.click();
     });
 
     btnOpenFile.addEventListener('click', () => {
+      if (!device) return;
       fileInput.click();
     });
 
     fileInput.addEventListener('change', (e) => {
+      if (!device) return;
       const file = e.target.files?.[0];
       if (file) {
         loadHDR(file);
@@ -569,16 +612,17 @@
 
     window.addEventListener('dragover', (e) => {
       e.preventDefault();
-      dropOverlay.style.background = 'rgba(0,0,0,0.85)';
+      if (device) dropOverlay.style.background = 'rgba(0,0,0,0.85)';
     });
 
     window.addEventListener('dragleave', (e) => {
       e.preventDefault();
-      dropOverlay.style.background = 'rgba(0,0,0,0.75)';
+      if (device) dropOverlay.style.background = 'rgba(0,0,0,0.75)';
     });
 
     window.addEventListener('drop', (e) => {
       e.preventDefault();
+      if (!device) return;
       dropOverlay.style.background = 'rgba(0,0,0,0.75)';
       const file = e.dataTransfer?.files?.[0];
       if (file) {
