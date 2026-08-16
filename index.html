@@ -859,7 +859,8 @@
 
               if (p.misc.y == 0.0) {
                 // Fallback for standard SDR image without Gain Map
-                return vec4f(sdrLinear.rgb * p.misc.x, 1.0);
+                // return vec4f(sdrLinear.rgb * p.misc.x, 1.0);
+                return vec4f(linear_to_srgb(sdrLinear.rgb * p.misc.x), 1.0);
               }
 
               let rawGain = textureSample(gainMapTex, samp, vec2f(u, v));
