@@ -84,7 +84,8 @@
   <input id="file-input" type="file" accept=".hdr,.jpg,.jpeg,image/jpeg" style="display:none">
   <!--<img id="edr-trigger" style="position:fixed; top:0; left:0; width:1px; height:1px; opacity:0.01; pointer-events:none; z-index:-1;" alt="">-->
   <!-- 画面全体を覆うサイズに変更し、OSの間引き（カリング）最適化を回避する -->
-  <img id="edr-trigger" style="position:fixed; top:0; left:0; width:100vw; height:100vh; object-fit:cover; opacity:0.01; pointer-events:none; z-index:2;" alt="">
+  <!--<img id="edr-trigger" style="position:fixed; top:0; left:0; width:100vw; height:100vh; object-fit:cover; opacity:0.0; pointer-events:none; z-index:2;" alt="">-->
+  <img id="edr-trigger" src="./dummy_hdr_low.jpg" style="position:fixed; top:0; left:0; width:100vw; height:100vh; object-fit:cover; opacity:0.01; pointer-events:none; z-index:2;" alt="">
   <canvas id="canvas"></canvas>
 
   <!-- ハンバーガー切り替えボタン -->
@@ -655,15 +656,6 @@
 
     async function loadHDR(file) {
 
-      //dummy tiny image
-      const edrTrigger = document.getElementById('edr-trigger');
-        if (edrTrigger) {
-          if (edrBlobUrl) {
-            URL.revokeObjectURL(edrBlobUrl); // 古いメモリを解放
-          }
-          edrBlobUrl = URL.createObjectURL(file);
-          edrTrigger.src = edrBlobUrl;
-        }
       const fileName = file.name.toLowerCase();
       const isHDR = fileName.endsWith('.hdr');
 
