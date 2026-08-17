@@ -151,7 +151,7 @@
     const btnOpenFile = document.getElementById('btn-open-file');
 
     let edrBlobUrl = null;
-
+    let currentHdrFile = null;
     // パネル開閉トグル
     btnTogglePanel.addEventListener('click', () => {
       const isCollapsed = controlPanel.classList.toggle('collapsed');
@@ -652,7 +652,8 @@
     const loader = new RGBELoader();
 
     async function loadHDR(file) {
-
+      
+      currentHdrFile = file; // ← ここでファイル本体を保存する
       //dummy tiny image
       const edrTrigger = document.getElementById('edr-trigger');
         if (edrTrigger) {
@@ -1077,31 +1078,32 @@
       requestAnimationFrame(render);
     }
 
-    // ===== iOSコンポジタ（EDR）の自動復帰ハック =====
-    // スリープ復帰やタブ切り替えで画面が再度アクティブになったことを検知する
+// ===== iOSコンポジタ（EDR）の自動復帰ハック（完全再生成版） =====
     document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible' && edrBlobUrl) {
+      if (document.visibilityState === 'visible' && currentHdrFile) {
         
-        // 起爆ロジックを関数化
         const shakeEdrContext = () => {
+          // 1. WebGPUキャンバスの強制リフロー（コンポジタに「板」の再生成を要求）
+          canvas.style.display = 'none';
+          void canvas.offsetHeight; // ブラウザに強制的なレイアウト再計算を命令するハック
+          canvas.style.display = 'block';
+
+          // 2. EDRトリガー（木馬）の完全な再構築
+          // 全く新しいURLを発行し、WebKitのキャッシュを無効化してネイティブデコーダを強制起動する
           const edrTrigger = document.getElementById('edr-trigger');
           if (edrTrigger) {
-            edrTrigger.style.display = 'none';
-            requestAnimationFrame(() => {
-              edrTrigger.style.display = 'block';
-              edrTrigger.src = edrBlobUrl;
-              console.log("EDR context re-triggered");
-            });
+            if (edrBlobUrl) {
+              URL.revokeObjectURL(edrBlobUrl); // 古いポインタを破棄
+            }
+            edrBlobUrl = URL.createObjectURL(currentHdrFile); // 新規発行
+            edrTrigger.src = edrBlobUrl;
+            console.log("EDR context forcefully rebuilt");
           }
         };
 
-        // 1. 即時起爆（別アプリからの復帰時などに有効）
-        shakeEdrContext();
-        
-        // 2. 時間差起爆（フォアグラウンドでのスリープ復帰時のコンポジタ遅延に対応）
-        // OSの負荷状況によって復帰にかかる時間がブレるため、300ms後と800ms後の2段構えで確実に叩き起こす
-        setTimeout(shakeEdrContext, 300);
-        setTimeout(shakeEdrContext, 800);
+        // フォアグラウンド復帰時のOSのコンテキスト復元遅延を考慮し、時間差で撃ち込む
+        setTimeout(shakeEdrContext, 100);
+        setTimeout(shakeEdrContext, 600);
       }
     });
 
