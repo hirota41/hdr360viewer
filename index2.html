@@ -82,7 +82,9 @@
 </head>
 <body>
   <input id="file-input" type="file" accept=".hdr,.jpg,.jpeg,image/jpeg" style="display:none">
-  <img id="edr-trigger" style="position:fixed; top:0; left:0; width:1px; height:1px; opacity:0.01; pointer-events:none; z-index:-1;" alt="">
+  <!--<img id="edr-trigger" style="position:fixed; top:0; left:0; width:1px; height:1px; opacity:0.01; pointer-events:none; z-index:-1;" alt="">-->
+  <!-- 画面全体を覆うサイズに変更し、OSの間引き（カリング）最適化を回避する -->
+  <img id="edr-trigger" style="position:fixed; top:0; left:0; width:100vw; height:100vh; object-fit:cover; opacity:0.01; pointer-events:none; z-index:2;" alt="">
   <canvas id="canvas"></canvas>
 
   <!-- ハンバーガー切り替えボタン -->
@@ -151,7 +153,7 @@
     const btnOpenFile = document.getElementById('btn-open-file');
 
     let edrBlobUrl = null;
-    let currentHdrFile = null;
+
     // パネル開閉トグル
     btnTogglePanel.addEventListener('click', () => {
       const isCollapsed = controlPanel.classList.toggle('collapsed');
@@ -652,8 +654,7 @@
     const loader = new RGBELoader();
 
     async function loadHDR(file) {
-      
-      currentHdrFile = file; // ← ここでファイル本体を保存する
+
       //dummy tiny image
       const edrTrigger = document.getElementById('edr-trigger');
         if (edrTrigger) {
@@ -1078,35 +1079,25 @@
       requestAnimationFrame(render);
     }
 
-// ===== iOSコンポジタ（EDR）の自動復帰ハック（完全再生成版） =====
+    // ===== iOSコンポジタ（EDR）の自動復帰ハック =====
+    // スリープ復帰やタブ切り替えで画面が再度アクティブになったことを検知する
     document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible' && currentHdrFile) {
-        
-        const shakeEdrContext = () => {
-          // 1. WebGPUキャンバスの強制リフロー（コンポジタに「板」の再生成を要求）
-          canvas.style.display = 'none';
-          void canvas.offsetHeight; // ブラウザに強制的なレイアウト再計算を命令するハック
-          canvas.style.display = 'block';
-
-          // 2. EDRトリガー（木馬）の完全な再構築
-          // 全く新しいURLを発行し、WebKitのキャッシュを無効化してネイティブデコーダを強制起動する
-          const edrTrigger = document.getElementById('edr-trigger');
-          if (edrTrigger) {
-            if (edrBlobUrl) {
-              URL.revokeObjectURL(edrBlobUrl); // 古いポインタを破棄
-            }
-            edrBlobUrl = URL.createObjectURL(currentHdrFile); // 新規発行
+      if (document.visibilityState === 'visible' && edrBlobUrl) {
+        const edrTrigger = document.getElementById('edr-trigger');
+        if (edrTrigger) {
+          // 1. 一旦DOMのレンダリングツリーから切り離す（非表示）
+          edrTrigger.style.display = 'none';
+          
+          // 2. 次の描画フレームで再度表示し、srcを再代入することで
+          // iOSの画像デコーダとEDRコンポジタに「新しいHDR画像が来た」と錯覚させ、強制再構築させる
+          requestAnimationFrame(() => {
+            edrTrigger.style.display = 'block';
             edrTrigger.src = edrBlobUrl;
-            console.log("EDR context forcefully rebuilt");
-          }
-        };
-
-        // フォアグラウンド復帰時のOSのコンテキスト復元遅延を考慮し、時間差で撃ち込む
-        setTimeout(shakeEdrContext, 100);
-        setTimeout(shakeEdrContext, 600);
+            console.log("EDR context re-triggered by visibilitychange");
+          });
+        }
       }
     });
-
 </script>
 </body>
 </html>
