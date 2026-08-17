@@ -1078,26 +1078,7 @@
 
       requestAnimationFrame(render);
     }
-
-    // ===== iOSコンポジタ（EDR）の自動復帰ハック =====
-    // スリープ復帰やタブ切り替えで画面が再度アクティブになったことを検知する
-    document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible' && edrBlobUrl) {
-        const edrTrigger = document.getElementById('edr-trigger');
-        if (edrTrigger) {
-          // 1. 一旦DOMのレンダリングツリーから切り離す（非表示）
-          edrTrigger.style.display = 'none';
-          
-          // 2. 次の描画フレームで再度表示し、srcを再代入することで
-          // iOSの画像デコーダとEDRコンポジタに「新しいHDR画像が来た」と錯覚させ、強制再構築させる
-          requestAnimationFrame(() => {
-            edrTrigger.style.display = 'block';
-            edrTrigger.src = edrBlobUrl;
-            console.log("EDR context re-triggered by visibilitychange");
-          });
-        }
-      }
-    });
+    
 </script>
 </body>
 </html>
