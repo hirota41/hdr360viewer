@@ -1,0 +1,1108 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <title>HDR360 Viewer</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    html,body{height:100%;margin:0;overflow:hidden;touch-action:none;}
+    canvas{width:100%;height:100vh;display:block;cursor:grab;touch-action:none;}
+    canvas:active{cursor:grabbing}
+    
+    /* ハンバーガートグルボタン */
+    .menu-btn {
+      position: fixed; left: 12px; top: 12px;
+      width: 40px; height: 40px;
+      background: rgba(15, 15, 15, 0.75);
+      border: 1px solid rgba(255, 255, 255, 0.25);
+      border-radius: 8px;
+      cursor: pointer; z-index: 110;
+      display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 5px;
+      backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+      transition: background 0.2s, border-color 0.2s;
+      padding: 0; outline: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .menu-btn:hover { background: rgba(35, 35, 35, 0.85); border-color: rgba(255, 255, 255, 0.4); }
+    .menu-btn .icon-bar {
+      width: 20px; height: 2px; background: #fff; border-radius: 1px;
+      transition: transform 0.25s ease, opacity 0.25s ease;
+    }
+    .menu-btn.active .icon-bar:nth-child(1) { transform: translateY(7px) rotate(45deg); }
+    .menu-btn.active .icon-bar:nth-child(2) { opacity: 0; }
+    .menu-btn.active .icon-bar:nth-child(3) { transform: translateY(-7px) rotate(-45deg); }
+
+    /* 統合コントロールパネル（ドロワー） */
+    .panel-container {
+      position: fixed; left: 12px; top: 60px;
+      max-width: 320px; width: calc(100% - 24px);
+      max-height: calc(100vh - 75px); overflow-y: auto;
+      background: rgba(15, 15, 15, 0.82);
+      backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+      color: #fff; border-radius: 10px;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+      font-family: sans-serif; font-size: 12px;
+      transition: transform 0.25s ease, opacity 0.25s ease, visibility 0.25s;
+      z-index: 105;
+      padding: 12px; box-sizing: border-box;
+    }
+    .panel-container.collapsed {
+      transform: translateX(-15px) scale(0.95);
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+    }
+    .panel-section { margin-bottom: 10px; }
+    .panel-section:not(:last-child) { padding-bottom: 10px; border-bottom: 1px solid rgba(255, 255, 255, 0.12); }
+    .panel-section div { margin: 6px 0; }
+    
+    .btn {
+      padding: 6px 12px; background: #3366cc; color: #fff; border: none; border-radius: 4px;
+      font-size: 12px; cursor: pointer; display: inline-block; transition: background 0.2s;
+    }
+    .btn:hover { background: #4477dd; }
+    .btn:active { background: #224488; }
+    
+    .panel-status {
+      padding: 6px 8px; background: rgba(0, 0, 0, 0.4); color: #0f0; border-radius: 4px;
+      font-family: monospace; font-size: 11px; white-space: pre-wrap; line-height: 1.4; word-break: break-all;
+    }
+
+    #drop-overlay {
+      position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+      background: rgba(0,0,0,0.75); color: #fff;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      font-family: sans-serif; font-size: 1.3rem; z-index: 100;
+      border: 4px dashed rgba(255,255,255,0.7); border-radius: 0; margin: 0; box-sizing: border-box;
+      cursor: pointer; pointer-events: auto; text-align: center; padding: 20px;
+      user-select: none; -webkit-tap-highlight-color: transparent;
+    }
+  </style>
+</head>
+<body>
+  <input id="file-input" type="file" accept=".hdr,.jpg,.jpeg,image/jpeg" style="display:none">
+  <!--<img id="edr-trigger" style="position:fixed; top:0; left:0; width:1px; height:1px; opacity:0.01; pointer-events:none; z-index:-1;" alt="">-->
+  <!-- 画面全体を覆うサイズに変更し、OSの間引き（カリング）最適化を回避する -->
+  <!--<img id="edr-trigger" style="position:fixed; top:0; left:0; width:100vw; height:100vh; object-fit:cover; opacity:0.0; pointer-events:none; z-index:2;" alt="">-->
+  <img id="edr-trigger" src="./dummy_hdr_low.jpg" style="position:fixed; top:0; left:0; width:100vw; height:100vh; object-fit:cover; opacity:0.01; pointer-events:none; z-index:2;" alt="">
+  <canvas id="canvas"></canvas>
+
+  <!-- ハンバーガー切り替えボタン -->
+  <button id="btn-toggle-panel" aria-label="Toggle Panel" class="menu-btn active">
+    <span class="icon-bar"></span>
+    <span class="icon-bar"></span>
+    <span class="icon-bar"></span>
+  </button>
+
+  <!-- 統合コントロールパネル -->
+  <div id="control-panel" class="panel-container">
+    <div class="panel-section">
+      <strong style="font-size: 13px;">HDR360 Viewer</strong><br>
+      <button id="btn-open-file" class="btn" style="margin-top: 6px;">Open File</button>
+    </div>
+
+    <div id="debug-ui" class="panel-section" style="display:none;">
+      <div style="margin-bottom:8px; padding-bottom:6px; border-bottom:1px solid rgba(255,255,255,0.15);">
+        <label style="cursor:pointer; display:flex; align-items:center; gap:6px; font-weight:bold;">
+          <input id="toggle-hdr" type="checkbox" checked style="cursor:pointer; width:16px; height:16px;">
+          <span id="hdrToggleLabel" style="color:#0f0;">Mode: HDR (Active)</span>
+        </label>
+      </div>
+      <div id="brightness-ui" style="display:none;">
+        <div>Brightness: <input id="brightness" type="range" min="0.1" max="5" step="0.1" value="1.0"> <span id="bVal">1.00</span></div>
+      </div>
+      <div id="hdr-ui" style="display:none;">
+        <div>HDR Capacity: <input id="hdr-headroom" type="range" min="0" max="1000" step="1" value="410"> <span id="hVal">6.00</span>x</div>
+        <div>Gainmap Weight: <span id="wVal" style="color:#0ff;">1.00</span></div>
+      </div>
+    </div>
+
+    <div id="status" class="panel-status">Select File or Drop Here...</div>
+  </div>
+
+  <div id="drop-overlay">
+    <div style="font-weight: bold; margin-bottom: 8px;">Tap to Select Image</div>
+    <div style="font-size: 1rem; opacity: 0.85;">or Drop File Here (.hdr / ultrahdr .jpg)</div>
+  </div>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+      "RGBELoader": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/RGBELoader.js"
+    }
+  }
+  </script>
+
+  <script type="module">
+    import { RGBELoader } from 'RGBELoader';
+    import * as THREE from 'three';
+
+    const canvas = document.getElementById('canvas');
+    const statusEl = document.getElementById('status');
+    const bVal = document.getElementById('bVal');
+    const hVal = document.getElementById('hVal');
+    const wVal = document.getElementById('wVal');
+    const toggleHdrInput = document.getElementById('toggle-hdr');
+    const hdrToggleLabel = document.getElementById('hdrToggleLabel');
+    const controlPanel = document.getElementById('control-panel');
+    const btnTogglePanel = document.getElementById('btn-toggle-panel');
+    const dropOverlay = document.getElementById('drop-overlay');
+    const debugUI = document.getElementById('debug-ui');
+    const fileInput = document.getElementById('file-input');
+    const btnOpenFile = document.getElementById('btn-open-file');
+
+    let edrBlobUrl = null;
+
+    // パネル開閉トグル
+    btnTogglePanel.addEventListener('click', () => {
+      const isCollapsed = controlPanel.classList.toggle('collapsed');
+      btnTogglePanel.classList.toggle('active', !isCollapsed);
+    });
+
+    // パネル内のタッチ・クリックイベントがキャンバスに伝播して視点移動するのを防止
+    controlPanel.addEventListener('pointerdown', (e) => e.stopPropagation());
+    btnTogglePanel.addEventListener('pointerdown', (e) => e.stopPropagation());
+
+    let brightness = 1.0;
+    function getSystemHdrSupport() {
+      // W3C標準の dynamic-range メディアクエリによる判定
+      return !!(window.matchMedia && window.matchMedia('(dynamic-range: high)').matches);
+    }
+
+    const isSystemHdr = getSystemHdrSupport();
+    let displayHeadroom = isSystemHdr ? 6.0 : 1.0;
+    let isHdrMode = true;
+
+    // 指数関数スライダー変換関数 (1.0x 〜 50.0x)
+    const MAX_HEADROOM = 50.0;
+    function headroomToSlider(h) {
+      const clamped = Math.max(1.0, Math.min(h, MAX_HEADROOM));
+      return Math.round(1000 * (Math.log(clamped) / Math.log(MAX_HEADROOM)));
+    }
+    function sliderToHeadroom(val) {
+      const t = Math.max(0, Math.min(Number(val), 1000)) / 1000;
+      return Math.pow(MAX_HEADROOM, t);
+    }
+
+    const headroomInputInit = document.getElementById('hdr-headroom');
+    if (headroomInputInit) headroomInputInit.value = headroomToSlider(displayHeadroom);
+    if (hVal) hVal.textContent = displayHeadroom.toFixed(2);
+
+    toggleHdrInput?.addEventListener('change', (e) => {
+      isHdrMode = e.target.checked;
+      if (hdrToggleLabel) {
+        hdrToggleLabel.textContent = isHdrMode ? 'Mode: HDR (Active)' : 'Mode: SDR (Bypassed)';
+        hdrToggleLabel.style.color = isHdrMode ? '#0f0' : '#fa0';
+      }
+    });
+
+    function setStatus(msg) {
+      statusEl.textContent = msg;
+    }
+
+    function showHdrUnsupportedWarning() {
+      statusEl.style.color = '#ffaa00';
+      setStatus('[Warning] HDR display is not detected. True HDR output is unavailable.');
+
+      dropOverlay.style.cursor = 'default';
+      dropOverlay.style.background = 'rgba(25, 20, 0, 0.92)';
+      dropOverlay.style.borderColor = 'rgba(255, 170, 0, 0.8)';
+      dropOverlay.innerHTML = `
+        <div style="font-size: 2.2rem; margin-bottom: 12px;">📺</div>
+        <div style="font-weight: bold; font-size: 1.4rem; color: #ffcc00; margin-bottom: 10px;">
+          HDR Display Not Detected
+        </div>
+        <div style="font-size: 0.95rem; opacity: 0.9; max-width: 520px; line-height: 1.6; margin-bottom: 14px;">
+          HDR display output is disabled or not supported on this monitor, so HDR360 Viewer cannot be launched.<br>
+          Please <strong>enable HDR</strong> in your OS display settings or connect an <strong>HDR-capable monitor</strong>.
+        </div>
+      `;
+    }
+
+    function showWebGpuUnsupportedError(reason) {
+      statusEl.style.color = '#ff5555';
+      setStatus(`[Error] WebGPU unavailable: ${reason}`);
+
+      dropOverlay.style.cursor = 'default';
+      dropOverlay.style.background = 'rgba(20, 0, 0, 0.9)';
+      dropOverlay.style.borderColor = 'rgba(255, 60, 60, 0.8)';
+      dropOverlay.innerHTML = `
+        <div style="font-size: 2.2rem; margin-bottom: 12px;">⚠️</div>
+        <div style="font-weight: bold; font-size: 1.4rem; color: #ff6666; margin-bottom: 10px;">
+          WebGPU Not Supported
+        </div>
+        <div style="font-size: 0.95rem; opacity: 0.9; max-width: 500px; line-height: 1.6; margin-bottom: 14px;">
+          Your browser or device does not currently support or enable WebGPU.<br>
+          Please use a modern browser (such as latest <strong>Google Chrome</strong>, <strong>Microsoft Edge</strong>, or <strong>Safari with WebGPU enabled</strong>) on a supported device.
+        </div>
+        <div style="font-size: 0.8rem; opacity: 0.6; font-family: monospace;">
+          Detail: ${reason}
+        </div>
+      `;
+    }
+
+    // ===== File Input & Drag & Drop Handling =====
+    function handleFileSelected(file) {
+      if (!device) {
+        if (!getSystemHdrSupport()) {
+          showHdrUnsupportedWarning();
+        }
+        return;
+      }
+      if (file) {
+        loadHDR(file);
+      }
+    }
+
+    dropOverlay.addEventListener('click', () => {
+      if (!device) return;
+      fileInput.click();
+    });
+
+    btnOpenFile.addEventListener('click', () => {
+      if (!device) {
+        if (!getSystemHdrSupport()) {
+          showHdrUnsupportedWarning();
+        }
+        return;
+      }
+      fileInput.click();
+    });
+
+    fileInput.addEventListener('change', (e) => {
+      const file = e.target.files?.[0];
+      handleFileSelected(file);
+      fileInput.value = '';
+    });
+
+    window.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      if (device) dropOverlay.style.background = 'rgba(0,0,0,0.85)';
+    });
+
+    window.addEventListener('dragleave', (e) => {
+      e.preventDefault();
+      if (device) dropOverlay.style.background = 'rgba(0,0,0,0.75)';
+    });
+
+    window.addEventListener('drop', (e) => {
+      e.preventDefault();
+      if (device) dropOverlay.style.background = 'rgba(0,0,0,0.75)';
+      const file = e.dataTransfer?.files?.[0];
+      handleFileSelected(file);
+    });
+
+    // ===== Check HDR & WebGPU Setup =====
+    let adapter = null;
+    let device = null;
+    let context = null;
+    const format = 'rgba16float';
+
+    if (!getSystemHdrSupport()) {
+      showHdrUnsupportedWarning();
+      if (window.matchMedia) {
+        window.matchMedia('(dynamic-range: high)').addEventListener('change', (e) => {
+          if (e.matches) location.reload();
+        });
+      }
+    } else if (!navigator.gpu) {
+      showWebGpuUnsupportedError('navigator.gpu is undefined.');
+    } else {
+      try {
+        adapter = await navigator.gpu.requestAdapter();
+        if (!adapter) {
+          showWebGpuUnsupportedError('Failed to find a compatible GPU adapter.');
+        } else {
+          const requiredLimits = {};
+          if (adapter.limits.maxTextureDimension2D >= 16384) {
+            requiredLimits.maxTextureDimension2D = 16384;
+          }
+          if (adapter.limits.maxBufferSize >= 1073741824) {
+            requiredLimits.maxBufferSize = 1073741824;
+          } else {
+            requiredLimits.maxBufferSize = adapter.limits.maxBufferSize;
+          }
+          if (adapter.limits.maxStorageBufferBindingSize >= 1073741824) {
+            requiredLimits.maxStorageBufferBindingSize = 1073741824;
+          } else {
+            requiredLimits.maxStorageBufferBindingSize = adapter.limits.maxStorageBufferBindingSize;
+          }
+
+          device = await adapter.requestDevice({ requiredLimits });
+          context = canvas.getContext('webgpu');
+          if (!context) {
+            showWebGpuUnsupportedError('Failed to create WebGPU canvas context.');
+          } else {
+            context.configure({
+              device: device,
+              format: format,
+              usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+              colorSpace: 'srgb',
+              toneMapping: { mode: 'extended' }
+            });
+          }
+        }
+      } catch (err) {
+        showWebGpuUnsupportedError(err.message || String(err));
+      }
+    }
+
+    // ===== 2. Camera Setup (Math Only, No Three.js Renderer) =====
+    const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+    camera.rotation.order = 'YXZ';
+    const yawPitch = { yaw: 0, pitch: 0 };
+    
+    function updateCanvasSize() {
+      const w = window.innerWidth;
+      const h = window.innerHeight;
+      canvas.width = w * devicePixelRatio;
+      canvas.height = h * devicePixelRatio;
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
+    }
+    window.addEventListener('resize', updateCanvasSize);
+    updateCanvasSize();
+
+    // Interaction logic (Pointer & Touch Pinch-to-zoom)
+    const pointers = new Map();
+    let initialPinchDistance = null;
+    let initialFov = 75;
+
+    function getDistance(p1, p2) {
+      const dx = p1.clientX - p2.clientX;
+      const dy = p1.clientY - p2.clientY;
+      return Math.sqrt(dx * dx + dy * dy);
+    }
+
+    canvas.addEventListener('pointerdown', (e) => {
+      pointers.set(e.pointerId, { clientX: e.clientX, clientY: e.clientY });
+      if (pointers.size === 2) {
+        const [p1, p2] = Array.from(pointers.values());
+        initialPinchDistance = getDistance(p1, p2);
+        initialFov = camera.fov;
+      }
+    });
+
+    window.addEventListener('pointermove', (e) => {
+      if (!pointers.has(e.pointerId)) return;
+
+      const prev = pointers.get(e.pointerId);
+      const current = { clientX: e.clientX, clientY: e.clientY };
+
+      if (pointers.size === 1) {
+        // Single finger / mouse drag: rotation
+        const dx = current.clientX - prev.clientX;
+        const dy = current.clientY - prev.clientY;
+        yawPitch.yaw += dx * 0.003;
+        yawPitch.pitch += dy * 0.003;
+        yawPitch.pitch = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, yawPitch.pitch));
+      } else if (pointers.size === 2) {
+        // Two fingers: Pinch-to-zoom
+        pointers.set(e.pointerId, current);
+        const [p1, p2] = Array.from(pointers.values());
+        const currentDist = getDistance(p1, p2);
+        if (initialPinchDistance && initialPinchDistance > 0) {
+          const scale = initialPinchDistance / currentDist;
+          camera.fov = Math.max(20, Math.min(120, initialFov * scale));
+          camera.updateProjectionMatrix();
+        }
+        return;
+      }
+
+      pointers.set(e.pointerId, current);
+    });
+
+    function onPointerUpOrCancel(e) {
+      pointers.delete(e.pointerId);
+      if (pointers.size < 2) {
+        initialPinchDistance = null;
+      }
+    }
+
+    window.addEventListener('pointerup', onPointerUpOrCancel);
+    window.addEventListener('pointercancel', onPointerUpOrCancel);
+
+    canvas.addEventListener('wheel', (e) => {
+      camera.fov = Math.max(20, Math.min(120, camera.fov + e.deltaY * 0.05));
+      camera.updateProjectionMatrix();
+      e.preventDefault();
+    }, { passive: false });
+
+    // ===== 3. ISO 21496-1 & UltraHDR / MPF Parser =====
+    function parseUltraHDR(bytes) {
+      let primaryEnd = -1;
+      let secondaryStart = -1;
+
+      for (let i = 2; i < bytes.length - 1; i++) {
+        if (bytes[i] === 0xFF && bytes[i + 1] === 0xD8) {
+          let p = i - 1;
+          while (p >= 0 && bytes[p] === 0x00) p--;
+          if (p >= 1 && bytes[p - 1] === 0xFF && bytes[p] === 0xD9) {
+            primaryEnd = p + 1;
+            secondaryStart = i;
+            break;
+          }
+        }
+      }
+
+      if (secondaryStart === -1) {
+        return {
+          isUltraHDR: false,
+          sdrBytes: bytes,
+          gainMapBytes: null,
+          metadata: null
+        };
+      }
+
+      const sdrBytes = bytes.subarray(0, primaryEnd);
+      const gainMapBytes = bytes.subarray(secondaryStart);
+      
+      // ISO 21496-1 メタデータは通常 Secondary (ゲインマップ) または Primary の APP2 に完全な値が格納される
+      let metadata = parseIso21496_1(gainMapBytes) || parseIso21496_1(sdrBytes) || parseIso21496_1(bytes) || parseXmpGainMap(bytes);
+
+      if (!metadata) {
+        console.warn('Metadata not found, using default fallback metadata.');
+        metadata = {
+          gainMapMin: [0.0, 0.0, 0.0],
+          gainMapMax: [2.58496, 2.58496, 2.58496],
+          gamma: [1.0, 1.0, 1.0],
+          offsetSdr: [0.0, 0.0, 0.0],
+          offsetHdr: [0.0, 0.0, 0.0],
+          hdrCapacityMin: 1.0,
+          hdrCapacityMax: 6.0
+        };
+      }
+
+      console.log('Parsed UltraHDR metadata:', metadata);
+      return { isUltraHDR: true, sdrBytes, gainMapBytes, metadata };
+    }
+
+    function parseIso21496_1(bytes) {
+      if (!bytes || bytes.length < 32) return null;
+      const sig = [
+        0x75, 0x72, 0x6e, 0x3a, 0x69, 0x73, 0x6f, 0x3a, 0x73, 0x74, 0x64, 0x3a,
+        0x69, 0x73, 0x6f, 0x3a, 0x74, 0x73, 0x32, 0x31, 0x34, 0x39, 0x36, 0x3a,
+        0x2d, 0x31, 0x00
+      ];
+
+      function isMatch(offset) {
+        if (offset + 28 > bytes.length) return false;
+        for (let k = 0; k < 28; k++) {
+          if (bytes[offset + k] === sig[k]) continue;
+          if (sig[k] === 0x32 && bytes[offset + k] === 0x3a) continue; // handle minor variant 'ts:' vs 'ts'
+          return false;
+        }
+        return true;
+      }
+
+      for (let i = 0; i <= bytes.length - 32; i++) {
+        // JPEG APP2 マーカー: FF E2
+        if (bytes[i] === 0xFF && bytes[i + 1] === 0xE2) {
+          const segLength = (bytes[i + 2] << 8) | bytes[i + 3];
+          if (segLength >= 32 && i + 2 + segLength <= bytes.length) {
+            if (isMatch(i + 4)) {
+              const payloadOffset = i + 4 + 28;
+              const payloadLength = segLength - 2 - 28;
+              if (payloadLength >= 5) {
+                const view = new DataView(bytes.buffer, bytes.byteOffset + payloadOffset, payloadLength);
+                const res = parseIsoPayload(view);
+                if (res) return res;
+              }
+            }
+          }
+        }
+      }
+
+      // フォールバック: APP2マーカー以外でシグネチャが直接出現する場合の走査
+      for (let i = 0; i <= bytes.length - 32; i++) {
+        if (isMatch(i)) {
+          const payloadOffset = i + 28;
+          const payloadLength = bytes.length - payloadOffset;
+          if (payloadLength >= 5) {
+            const view = new DataView(bytes.buffer, bytes.byteOffset + payloadOffset, payloadLength);
+            const res = parseIsoPayload(view);
+            if (res) return res;
+          }
+        }
+      }
+
+      return null;
+    }
+
+    function parseIsoPayload(view) {
+      if (view.byteLength < 5) return null;
+      let pos = 0;
+      const minVer = view.getUint16(pos, false); pos += 2;
+      const writerVer = view.getUint16(pos, false); pos += 2;
+      const flags = view.getUint8(pos); pos += 1;
+
+      const isMultiChannel = (flags & 0x80) !== 0;
+      const useCommonDenominator = (flags & 0x08) !== 0;
+      const channelCount = isMultiChannel ? 3 : 1;
+
+      let baseHdrHeadroom = 0.0;
+      let altHdrHeadroom = 1.0;
+      let gainMapMin = [0, 0, 0];
+      let gainMapMax = [1, 1, 1];
+      let gamma = [1, 1, 1];
+      let offsetSdr = [0, 0, 0];
+      let offsetHdr = [0, 0, 0];
+
+      if (useCommonDenominator) {
+        const requiredSize = pos + 12 + channelCount * 20;
+        if (view.byteLength < requiredSize) return null;
+        const commonD = view.getUint32(pos, false); pos += 4;
+        if (commonD === 0) return null;
+        const baseHdrN = view.getUint32(pos, false); pos += 4;
+        const altHdrN = view.getUint32(pos, false); pos += 4;
+        baseHdrHeadroom = baseHdrN / commonD;
+        altHdrHeadroom = altHdrN / commonD;
+
+        for (let c = 0; c < channelCount; c++) {
+          gainMapMin[c] = view.getInt32(pos, false) / commonD; pos += 4;
+          gainMapMax[c] = view.getInt32(pos, false) / commonD; pos += 4;
+          gamma[c] = view.getUint32(pos, false) / commonD; pos += 4;
+          offsetSdr[c] = view.getInt32(pos, false) / commonD; pos += 4;
+          offsetHdr[c] = view.getInt32(pos, false) / commonD; pos += 4;
+        }
+      } else {
+        const requiredSize = pos + 16 + channelCount * 40;
+        if (view.byteLength < requiredSize) return null;
+        const baseHdrN = view.getUint32(pos, false); pos += 4;
+        const baseHdrD = view.getUint32(pos, false); pos += 4;
+        const altHdrN = view.getUint32(pos, false); pos += 4;
+        const altHdrD = view.getUint32(pos, false); pos += 4;
+        baseHdrHeadroom = baseHdrD !== 0 ? baseHdrN / baseHdrD : 0;
+        altHdrHeadroom = altHdrD !== 0 ? altHdrN / altHdrD : 1;
+
+        for (let c = 0; c < channelCount; c++) {
+          const minN = view.getInt32(pos, false); pos += 4;
+          const minD = view.getUint32(pos, false); pos += 4;
+          const maxN = view.getInt32(pos, false); pos += 4;
+          const maxD = view.getUint32(pos, false); pos += 4;
+          const gamN = view.getUint32(pos, false); pos += 4;
+          const gamD = view.getUint32(pos, false); pos += 4;
+          const sdrOffN = view.getInt32(pos, false); pos += 4;
+          const sdrOffD = view.getUint32(pos, false); pos += 4;
+          const hdrOffN = view.getInt32(pos, false); pos += 4;
+          const hdrOffD = view.getUint32(pos, false); pos += 4;
+
+          gainMapMin[c] = minD !== 0 ? minN / minD : 0;
+          gainMapMax[c] = maxD !== 0 ? maxN / maxD : 1;
+          gamma[c] = gamD !== 0 ? gamN / gamD : 1;
+          offsetSdr[c] = sdrOffD !== 0 ? sdrOffN / sdrOffD : 0;
+          offsetHdr[c] = hdrOffD !== 0 ? hdrOffN / hdrOffD : 0;
+        }
+      }
+
+      if (channelCount === 1) {
+        gainMapMin[1] = gainMapMin[2] = gainMapMin[0];
+        gainMapMax[1] = gainMapMax[2] = gainMapMax[0];
+        gamma[1] = gamma[2] = gamma[0];
+        offsetSdr[1] = offsetSdr[2] = offsetSdr[0];
+        offsetHdr[1] = offsetHdr[2] = offsetHdr[0];
+      }
+
+      return {
+        gainMapMin, gainMapMax, gamma, offsetSdr, offsetHdr,
+        hdrCapacityMin: Math.pow(2, baseHdrHeadroom),
+        hdrCapacityMax: Math.pow(2, altHdrHeadroom)
+      };
+    }
+
+    function parseXmpGainMap(bytes) {
+      const text = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+      if (!text.includes('hdrgm:')) return null;
+
+      function getAttr(name, defaultVal) {
+        const regex = new RegExp(`hdrgm:${name}="([^"]+)"`, 'i');
+        const match = text.match(regex);
+        if (match) return parseFloat(match[1]);
+
+        const tagRegex = new RegExp(`<hdrgm:${name}[^>]*>([^<]+)</hdrgm:${name}>`, 'i');
+        const tagMatch = text.match(tagRegex);
+        if (tagMatch) return parseFloat(tagMatch[1]);
+
+        return defaultVal;
+      }
+
+      const minVal = getAttr('GainMapMin', 0.0);
+      const maxVal = getAttr('GainMapMax', 1.0);
+      const gammaVal = getAttr('Gamma', 1.0);
+      const offsetSdrVal = getAttr('OffsetSDR', 0.015625);
+      const offsetHdrVal = getAttr('OffsetHDR', 0.015625);
+      const capMin = getAttr('HDRCapacityMin', 0.0);
+      const capMax = getAttr('HDRCapacityMax', 1.0);
+
+      return {
+        gainMapMin: [minVal, minVal, minVal],
+        gainMapMax: [maxVal, maxVal, maxVal],
+        gamma: [gammaVal, gammaVal, gammaVal],
+        offsetSdr: [offsetSdrVal, offsetSdrVal, offsetSdrVal],
+        offsetHdr: [offsetHdrVal, offsetHdrVal, offsetHdrVal],
+        hdrCapacityMin: Math.pow(2, capMin),
+        hdrCapacityMax: Math.pow(2, capMax)
+      };
+    }
+
+    // Global pipeline & render loop state
+    let activePipelineInfo = null;
+    let renderLoopStarted = false;
+
+    // ===== Memory Management: Resource Cleanup & Tiled Transfer =====
+    function cleanupPipeline() {
+      if (activePipelineInfo) {
+        if (activePipelineInfo.textures && Array.isArray(activePipelineInfo.textures)) {
+          for (const tex of activePipelineInfo.textures) {
+            try { tex?.destroy?.(); } catch (_) {}
+          }
+        }
+        if (activePipelineInfo.paramsBuffer) {
+          try { activePipelineInfo.paramsBuffer.destroy?.(); } catch (_) {}
+        }
+        activePipelineInfo = null;
+      }
+    }
+
+    // ===== 5. Load HDR and Create Pipeline =====
+    const loader = new RGBELoader();
+
+    async function loadHDR(file) {
+      if (activePipelineInfo) {
+        cleanupPipeline();
+        // VRAM/バッファ解放をOS/Metalドライバに浸透させるため、意図的に50ミリ秒待機
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+
+      const fileName = file.name.toLowerCase();
+      const isHDR = fileName.endsWith('.hdr');
+
+      statusEl.style.color = '#0f0';
+      setStatus(`Loading ${isHDR ? 'HDR (.hdr)' : 'UltraHDR (.jpg)'}...`);
+
+      try {
+        if (isHDR) {
+          const url = URL.createObjectURL(file);
+          const texture = await new Promise((resolve, reject) => {
+            loader.load(url, resolve, undefined, reject);
+          });
+          URL.revokeObjectURL(url);
+
+          const data = texture.image.data;
+          const width = texture.image.width;
+          const height = texture.image.height;
+          const texFormat = data instanceof Uint16Array ? 'rgba16float' : 'rgba32float';
+          const bytesPerPixel = data instanceof Uint16Array ? 8 : 16;
+          const bytesPerRow = Math.ceil((width * bytesPerPixel) / 256) * 256;
+
+          const hdrTexture = device.createTexture({
+            size: [width, height, 1],
+            format: texFormat,
+            usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+          });
+
+          device.queue.writeTexture(
+            { texture: hdrTexture }, data,
+            { bytesPerRow: bytesPerRow, rowsPerImage: height },
+            [width, height, 1]
+          );
+
+          const shaderModule = device.createShaderModule({
+            code: `
+              struct Params {
+                invViewProj: mat4x4f,
+                brightness_pad: vec4f,
+              }
+
+              struct VertexOutput {
+                @builtin(position) pos: vec4f,
+                @location(0) clipXY: vec2f,
+              }
+
+              // リニアRGBをextended-sRGB（非線形）へ変換する関数
+              fn linear_to_srgb(linear: vec3f) -> vec3f {
+                let a = 0.055;
+                let gamma = vec3f(1.0 / 2.4);
+                let s1 = linear * 12.92;
+                let s2 = (1.0 + a) * pow(max(linear, vec3f(0.0)), gamma) - a;
+                return select(s2, s1, linear <= vec3f(0.0031308));
+              }
+
+              @vertex
+              fn vs_main(@builtin(vertex_index) vIdx: u32) -> VertexOutput {
+                let u = f32((vIdx << 1u) & 2u);
+                let v = f32(vIdx & 2u);
+                let clipPos = vec2f(u * 2.0 - 1.0, v * 2.0 - 1.0);
+                return VertexOutput(vec4f(clipPos, 0.0, 1.0), clipPos);
+              }
+
+              @group(0) @binding(0) var samp: sampler;
+              @group(0) @binding(1) var tex: texture_2d<f32>;
+              @group(0) @binding(2) var<uniform> p: Params;
+
+              @fragment
+              fn fs_main(@location(0) clipXY: vec2f) -> @location(0) vec4f {
+                let clipPos = vec4f(clipXY.x, clipXY.y, 1.0, 1.0);
+                let worldPos = p.invViewProj * clipPos;
+                let rayDir = normalize(worldPos.xyz / worldPos.w);
+
+                let phi = asin(clamp(rayDir.y, -1.0, 1.0));
+                let theta = atan2(rayDir.x, -rayDir.z);
+                let u = theta / (2.0 * 3.141592653589793) + 0.5;
+                let v = 0.5 - phi / 3.141592653589793;
+
+                let color = textureSample(tex, samp, vec2f(u, v));
+                let isHdr = p.brightness_pad.y;
+                let outColor = select(clamp(color.rgb, vec3f(0.0), vec3f(1.0)), color.rgb, isHdr > 0.5);
+                return vec4f(linear_to_srgb(outColor * p.brightness_pad.x), 1.0);
+              }
+            `
+          });
+
+          const paramsBuffer = device.createBuffer({
+            size: 80,
+            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+          });
+
+          const pipeline = device.createRenderPipeline({
+            layout: 'auto',
+            vertex: { module: shaderModule, entryPoint: 'vs_main' },
+            fragment: { module: shaderModule, entryPoint: 'fs_main', targets: [{ format: format }] },
+            primitive: { topology: 'triangle-list' }
+          });
+
+          const bindGroup = device.createBindGroup({
+            layout: pipeline.getBindGroupLayout(0),
+            entries: [
+              { binding: 0, resource: device.createSampler({ magFilter: 'linear', minFilter: 'linear' }) },
+              { binding: 1, resource: hdrTexture.createView() },
+              { binding: 2, resource: { buffer: paramsBuffer } }
+            ]
+          });
+
+          activePipelineInfo = { 
+            pipeline, 
+            bindGroup, 
+            paramsBuffer, 
+            textures: [hdrTexture], 
+            type: 'hdr' 
+          };
+        } else {
+        // --- Strategy B: UltraHDR / SDR JPEG Loading with Fallback ---
+        setStatus('Parsing UltraHDR JPEG container & ISO 21496-1 metadata...');
+        const arrayBuffer = await file.arrayBuffer();
+        const rawBytes = new Uint8Array(arrayBuffer);
+
+        const parsed = parseUltraHDR(rawBytes);
+        const hasGainMap = parsed.isUltraHDR && parsed.gainMapBytes !== null;
+        const metadata = parsed.metadata;
+
+        console.log('Parsed UltraHDR:', { hasGainMap, metadata });
+
+        const [sdrImageBitmap, gainMapImageBitmap] = await Promise.all([
+          createImageBitmap(new Blob([parsed.sdrBytes], { type: 'image/jpeg' })),
+          hasGainMap
+            ? createImageBitmap(new Blob([parsed.gainMapBytes], { type: 'image/jpeg' }), { colorSpaceConversion: 'none' })
+            : Promise.resolve(null)
+        ]);
+
+        const width = sdrImageBitmap.width;
+        const height = sdrImageBitmap.height;
+
+        const baseTexture = device.createTexture({
+          size: [width, height, 1],
+          format: 'rgba8unorm-srgb',
+          usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
+        });
+
+        const gainMapTexture = device.createTexture({
+          size: [gainMapImageBitmap ? gainMapImageBitmap.width : 1, gainMapImageBitmap ? gainMapImageBitmap.height : 1, 1],
+          format: 'rgba8unorm',
+          usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
+        });
+
+        device.queue.copyExternalImageToTexture(
+          { source: sdrImageBitmap, flipY: false },
+          { texture: baseTexture },
+          [width, height, 1]
+        );
+
+        if (gainMapImageBitmap) {
+          device.queue.copyExternalImageToTexture(
+            { source: gainMapImageBitmap, flipY: false },
+            { texture: gainMapTexture },
+            [gainMapImageBitmap.width, gainMapImageBitmap.height, 1]
+          );
+        }
+
+        const shaderModule = device.createShaderModule({
+          code: `
+            struct Params {
+              invViewProj: mat4x4f,
+              gainMapMin: vec4f,
+              gainMapMax: vec4f,
+              gamma: vec4f,
+              offsetSdr: vec4f,
+              offsetHdr: vec4f,
+              misc: vec4f,
+            }
+
+            struct VertexOutput {
+              @builtin(position) pos: vec4f,
+              @location(0) clipXY: vec2f,
+            }
+
+            // リニアRGBをextended-sRGB（非線形）へ変換する関数
+            fn linear_to_srgb(linear: vec3f) -> vec3f {
+              let a = 0.055;
+              let gamma = vec3f(1.0 / 2.4);
+              let s1 = linear * 12.92;
+              let s2 = (1.0 + a) * pow(max(linear, vec3f(0.0)), gamma) - a;
+              return select(s2, s1, linear <= vec3f(0.0031308));
+            }
+
+            @vertex
+            fn vs_main(@builtin(vertex_index) vIdx: u32) -> VertexOutput {
+              let u = f32((vIdx << 1u) & 2u);
+              let v = f32(vIdx & 2u);
+              let clipPos = vec2f(u * 2.0 - 1.0, v * 2.0 - 1.0);
+              return VertexOutput(vec4f(clipPos, 0.0, 1.0), clipPos);
+            }
+
+            @group(0) @binding(0) var samp: sampler;
+            @group(0) @binding(1) var baseTex: texture_2d<f32>;
+            @group(0) @binding(2) var gainMapTex: texture_2d<f32>;
+            @group(0) @binding(3) var<uniform> p: Params;
+
+            @fragment
+            fn fs_main(@location(0) clipXY: vec2f) -> @location(0) vec4f {
+              let clipPos = vec4f(clipXY.x, clipXY.y, 1.0, 1.0);
+              let worldPos = p.invViewProj * clipPos;
+              let rayDir = normalize(worldPos.xyz / worldPos.w);
+
+              let phi = asin(clamp(rayDir.y, -1.0, 1.0));
+              let theta = atan2(rayDir.x, -rayDir.z);
+              let u = theta / (2.0 * 3.141592653589793) + 0.5;
+              let v = 0.5 - phi / 3.141592653589793;
+
+              let sdrLinear = textureSample(baseTex, samp, vec2f(u, v));
+
+              if (p.misc.y == 0.0) {
+                // Fallback for standard SDR image without Gain Map
+                // return vec4f(sdrLinear.rgb * p.misc.x, 1.0);
+                return vec4f(linear_to_srgb(sdrLinear.rgb * p.misc.x), 1.0);
+              }
+
+              let rawGain = textureSample(gainMapTex, samp, vec2f(u, v));
+              // 1chグレースケールゲインマップの場合にもRGBへ正しく展開
+              let gainRGB = select(rawGain.rgb, vec3f(rawGain.r), rawGain.g == 0.0 && rawGain.b == 0.0);
+
+              let gammaVal = p.gamma.xyz;
+              let gMin = p.gainMapMin.xyz;
+              let gMax = p.gainMapMax.xyz;
+              let oSdr = p.offsetSdr.xyz;
+              let oHdr = p.offsetHdr.xyz;
+
+              // ISO 21496-1 / UltraHDR True HDR Reconstruction with Display Adaptation (Weight):
+              let weight = p.misc.z;
+              let gainMapped = pow(max(gainRGB, vec3f(0.0)), gammaVal);
+              let logBoost = mix(gMin, gMax, gainMapped);
+              let actualLogBoost = logBoost * weight;
+              let sdrAdjusted = sdrLinear.rgb + oSdr;
+              let hdrColor = max(sdrAdjusted * exp2(actualLogBoost) - oHdr, vec3f(0.0));
+
+              //return vec4f(hdrColor * p.misc.x, 1.0);
+              return vec4f(linear_to_srgb(hdrColor * p.misc.x), 1.0);
+            }
+          `
+        });
+
+        const paramsBuffer = device.createBuffer({
+          size: 160,
+          usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+        });
+
+        const pipeline = device.createRenderPipeline({
+          layout: 'auto',
+          vertex: { module: shaderModule, entryPoint: 'vs_main' },
+          fragment: { module: shaderModule, entryPoint: 'fs_main', targets: [{ format: format }] },
+          primitive: { topology: 'triangle-list' }
+        });
+
+        const bindGroup = device.createBindGroup({
+          layout: pipeline.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: device.createSampler({ magFilter: 'linear', minFilter: 'linear' }) },
+            { binding: 1, resource: baseTexture.createView() },
+            { binding: 2, resource: gainMapTexture.createView() },
+            { binding: 3, resource: { buffer: paramsBuffer } }
+          ]
+        });
+
+        activePipelineInfo = { 
+          pipeline, 
+          bindGroup, 
+          paramsBuffer, 
+          textures: [baseTexture, gainMapTexture],
+          type: 'ultrahdr',
+          hasGainMap,
+          metadata 
+        };
+      }
+
+      dropOverlay.style.display = 'none';
+      debugUI.style.display = 'block';
+
+      const brightnessUi = document.getElementById('brightness-ui');
+      if (brightnessUi) {
+        brightnessUi.style.display = activePipelineInfo.type === 'hdr' ? 'block' : 'none';
+      }
+
+      const hdrUi = document.getElementById('hdr-ui');
+      if (activePipelineInfo.hasGainMap) {
+        hdrUi.style.display = 'block';
+        const headroomInput = document.getElementById('hdr-headroom');
+        if (headroomInput) {
+          headroomInput.value = headroomToSlider(displayHeadroom);
+          hVal.textContent = displayHeadroom.toFixed(2);
+        }
+      } else {
+        hdrUi.style.display = 'none';
+      }
+
+      if (activePipelineInfo.type === 'hdr') {
+        setStatus('• Format: Radiance HDR');
+      } else if (activePipelineInfo.hasGainMap) {
+        const capMax = activePipelineInfo.metadata?.hdrCapacityMax || 6.0;
+        setStatus(`• Format: UltraHDR JPEG (ISO 21496-1 Gain Map)\n• Max Boost: ${capMax.toFixed(2)}x (Content Max Capacity)`);
+      } else {
+        setStatus('• Format: Standard SDR JPEG');
+      }
+
+      if (!renderLoopStarted) {
+        renderLoopStarted = true;
+        render();
+      }
+    } catch (err) {
+      console.error('Failed to load HDR image:', err);
+      cleanupPipeline();
+      statusEl.style.color = '#ff5555';
+      setStatus(`[Load Error] ${err.message || String(err)}`);
+    }
+  }
+
+    document.getElementById('brightness').addEventListener('input', (e) => {
+      brightness = parseFloat(e.target.value);
+      bVal.textContent = brightness.toFixed(2);
+    });
+
+    document.getElementById('hdr-headroom')?.addEventListener('input', (e) => {
+      displayHeadroom = sliderToHeadroom(e.target.value);
+      hVal.textContent = displayHeadroom.toFixed(2);
+    });
+
+    function computeGainmapWeight(headroom, capMin, capMax) {
+      const minH = Math.max(capMin || 1.0, 1.0);
+      const maxH = Math.max(capMax || 1.0, minH);
+      if (headroom <= minH) return 0.0;
+      if (headroom >= maxH) return 1.0;
+      const logMin = Math.log2(minH);
+      const logMax = Math.log2(maxH);
+      const logDisplay = Math.log2(headroom);
+      if (Math.abs(logMax - logMin) < 1e-5) return 1.0;
+      return Math.min(Math.max((logDisplay - logMin) / (logMax - logMin), 0.0), 1.0);
+    }
+
+    // ===== 6. Render Loop =====
+    const viewProj = new THREE.Matrix4();
+    const invViewProj = new THREE.Matrix4();
+    const paramsArrayHdr = new Float32Array(20); // 80 bytes
+    const paramsArrayUltra = new Float32Array(40); // 160 bytes
+
+    function render() {
+      if (activePipelineInfo) {
+        camera.rotation.y = yawPitch.yaw;
+        camera.rotation.x = yawPitch.pitch;
+        camera.updateMatrixWorld();
+
+        viewProj.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+        invViewProj.copy(viewProj).invert();
+
+        if (activePipelineInfo.type === 'hdr') {
+          paramsArrayHdr.set(invViewProj.elements, 0);
+          paramsArrayHdr[16] = brightness;
+          paramsArrayHdr[17] = isHdrMode ? 1.0 : 0.0;
+          device.queue.writeBuffer(activePipelineInfo.paramsBuffer, 0, paramsArrayHdr);
+        } else {
+          paramsArrayUltra.set(invViewProj.elements, 0);
+          const meta = activePipelineInfo.metadata;
+          const hasGainMap = activePipelineInfo.hasGainMap;
+
+          if (hasGainMap && meta) {
+            paramsArrayUltra[16] = meta.gainMapMin[0];
+            paramsArrayUltra[17] = meta.gainMapMin[1];
+            paramsArrayUltra[18] = meta.gainMapMin[2];
+            paramsArrayUltra[19] = 0;
+
+            paramsArrayUltra[20] = meta.gainMapMax[0];
+            paramsArrayUltra[21] = meta.gainMapMax[1];
+            paramsArrayUltra[22] = meta.gainMapMax[2];
+            paramsArrayUltra[23] = 0;
+
+            paramsArrayUltra[24] = meta.gamma[0];
+            paramsArrayUltra[25] = meta.gamma[1];
+            paramsArrayUltra[26] = meta.gamma[2];
+            paramsArrayUltra[27] = 0;
+
+            paramsArrayUltra[28] = meta.offsetSdr[0];
+            paramsArrayUltra[29] = meta.offsetSdr[1];
+            paramsArrayUltra[30] = meta.offsetSdr[2];
+            paramsArrayUltra[31] = 0;
+
+            paramsArrayUltra[32] = meta.offsetHdr[0];
+            paramsArrayUltra[33] = meta.offsetHdr[1];
+            paramsArrayUltra[34] = meta.offsetHdr[2];
+            paramsArrayUltra[35] = 0;
+
+            const computedWeight = computeGainmapWeight(displayHeadroom, meta.hdrCapacityMin, meta.hdrCapacityMax);
+            const activeWeight = isHdrMode ? computedWeight : 0.0;
+            if (wVal) wVal.textContent = activeWeight.toFixed(2);
+
+            paramsArrayUltra[36] = 1.0; // Fixed to 1.0 in UltraHDR mode
+            paramsArrayUltra[37] = 1.0; // has gainmap
+            paramsArrayUltra[38] = activeWeight; // Display Adaptation Weight (ISO 21496-1)
+            paramsArrayUltra[39] = 0;
+          } else {
+            paramsArrayUltra[36] = 1.0; // Fixed to 1.0
+            paramsArrayUltra[37] = 0.0; // no gainmap
+            paramsArrayUltra[38] = 0.0;
+            paramsArrayUltra[39] = 0.0;
+          }
+
+          device.queue.writeBuffer(activePipelineInfo.paramsBuffer, 0, paramsArrayUltra);
+        }
+
+        const encoder = device.createCommandEncoder();
+        const pass = encoder.beginRenderPass({
+          colorAttachments: [{
+            view: context.getCurrentTexture().createView(),
+            clearValue: { r: 0, g: 0, b: 0, a: 1 },
+            loadOp: 'clear', storeOp: 'store'
+          }]
+        });
+
+        pass.setPipeline(activePipelineInfo.pipeline);
+        pass.setBindGroup(0, activePipelineInfo.bindGroup);
+        pass.draw(3);
+        pass.end();
+        device.queue.submit([encoder.finish()]);
+      }
+
+      requestAnimationFrame(render);
+    }
+    
+</script>
+</body>
+</html>
