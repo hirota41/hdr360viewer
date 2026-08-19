@@ -110,7 +110,7 @@
         </label>
       </div>
       <div id="brightness-ui" style="display:none;">
-        <div>Brightness: <input id="brightness" type="range" min="0.1" max="5" step="0.1" value="1.0"> <span id="bVal">1.00</span></div>
+        <div>Brightness: <input id="brightness" type="range" min="0.01" max="2" step="0.01" value="1.0"> <span id="bVal">1.00</span></div>
       </div>
       <div id="hdr-ui" style="display:none;">
         <div>HDR Capacity: <input id="hdr-headroom" type="range" min="0" max="1000" step="1" value="410"> <span id="hVal">6.00</span>x</div>
@@ -938,7 +938,7 @@
 
       const brightnessUi = document.getElementById('brightness-ui');
       if (brightnessUi) {
-        brightnessUi.style.display = activePipelineInfo.type === 'hdr' ? 'block' : 'none';
+        brightnessUi.style.display = 'block';
       }
 
       const hdrUi = document.getElementById('hdr-ui');
@@ -1045,12 +1045,12 @@
             const activeWeight = isHdrMode ? computedWeight : 0.0;
             if (wVal) wVal.textContent = activeWeight.toFixed(2);
 
-            paramsArrayUltra[36] = 1.0; // Fixed to 1.0 in UltraHDR mode
+            paramsArrayUltra[36] = brightness;
             paramsArrayUltra[37] = 1.0; // has gainmap
             paramsArrayUltra[38] = activeWeight; // Display Adaptation Weight (ISO 21496-1)
             paramsArrayUltra[39] = 0;
           } else {
-            paramsArrayUltra[36] = 1.0; // Fixed to 1.0
+            paramsArrayUltra[36] = brightness;
             paramsArrayUltra[37] = 0.0; // no gainmap
             paramsArrayUltra[38] = 0.0;
             paramsArrayUltra[39] = 0.0;
