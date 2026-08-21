@@ -614,41 +614,88 @@
 
     function parseXmpGainMap(bytes) {
       const text = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
-      if (!text.includes('hdrgm:')) return null;
+      
+      // hdrgmのネームスペースが含まれていなければ終了
+      if (!text.includes('hdrgm:') && !text.includes('hdr-gain-map')) return null;
 
-      function getAttr(name, defaultVal) {
-        // 1. 属性形式
-        const attrRegex = new RegExp(`hdrgm:${name}="([^"]+)"`, 'i');
-        const attrMatch = text.match(attrRegex);
-        if (attrMatch) return parseFloat(attrMatch[1]);
+      // 正規表現による脆弱な抽出を捨て、ブラウザ標準のDOMParserを使用する
+      const parser = new DOMParser();
+      let gainMapMin = [0.0, 0.0, 0.0];
+      let gainMapMax = [1.0, 1.0, 1.0];
+      let gamma = [1.0, 1.0, 1.0];
+      let offsetSdr = [0.015625, 0.015625, 0.015625];
+      let offsetHdr = [0.015625, 0.015625, 0.015625];
+      let capMin = 0.0;
+      let capMax = 1.0;
 
-        // 2. 単純なタグ形式
-        const tagRegex = new RegExp(`<hdrgm:${name}[^>]*>\\s*([^<]+)\\s*</hdrgm:${name}>`, 'i');
-        const tagMatch = text.match(tagRegex);
-        if (tagMatch && !isNaN(parseFloat(tagMatch[1]))) return parseFloat(tagMatch[1]);
-
-        // 3. Adobe RDF配列形式 (ここがLightroomのGainMapMaxを救い出す要)
-        const seqRegex = new RegExp(`<hdrgm:${name}[^>]*>[\\s\\S]*?<rdf:li>\\s*([\\d\\.]+)\\s*</rdf:li>`, 'i');
-        const seqMatch = text.match(seqRegex);
-        if (seqMatch) return parseFloat(seqMatch[1]);
-
-        return defaultVal;
+      // ファイル内に複数存在する可能性のある XMP ブロックを全て走査
+      const xmpRegex = /<x:xmpmeta[\s\S]*?<\/x:xmpmeta>/gi;
+      const xmpMatches = [...text.matchAll(xmpRegex)];
+      
+      for (const match of xmpMatches) {
+        const xmlDoc = parser.parseFromString(match[0], "text/xml");
+        const descriptions = xmlDoc.getElementsByTagName('*');
+        
+        for (let i = 0; i < descriptions.length; i++) {
+          const node = descriptions[i];
+          const tagName = node.tagName.toLowerCase();
+          
+          if (tagName.includes('hdrgm:') || tagName.includes('hdr-gain-map:')) {
+            const cleanName = tagName.split(':').pop();
+            
+            // 配列 (rdf:Seq -> rdf:li) の解析
+            const seqNodes = node.getElementsByTagName('rdf:li');
+            if (seqNodes.length === 3) {
+              const vals = [
+                parseFloat(seqNodes[0].textContent),
+                parseFloat(seqNodes[1].textContent),
+                parseFloat(seqNodes[2].textContent)
+              ];
+              if (cleanName === 'gainmapmin') gainMapMin = vals;
+              if (cleanName === 'gainmapmax') gainMapMax = vals;
+              if (cleanName === 'gamma') gamma = vals;
+              if (cleanName === 'offsetsdr') offsetSdr = vals;
+              if (cleanName === 'offsethdr') offsetHdr = vals;
+            } 
+            // 単一値の解析
+            else if (node.textContent.trim()) {
+              const val = parseFloat(node.textContent);
+              if (!isNaN(val)) {
+                if (cleanName === 'hdrcapacitymin') capMin = val;
+                if (cleanName === 'hdrcapacitymax') capMax = val;
+                // 万が一単一値で記録されていた場合のフォールバック
+                if (cleanName === 'gainmapmin') gainMapMin = [val, val, val];
+                if (cleanName === 'gainmapmax') gainMapMax = [val, val, val];
+              }
+            }
+          }
+          
+          // 属性として記録されている場合の解析 (記述Aパターン)
+          for (let j = 0; j < node.attributes.length; j++) {
+            const attr = node.attributes[j];
+            const attrName = attr.name.toLowerCase();
+            if (attrName.includes('hdrgm:') || attrName.includes('hdr-gain-map:')) {
+              const cleanName = attrName.split(':').pop();
+              const val = parseFloat(attr.value);
+              if (!isNaN(val)) {
+                if (cleanName === 'hdrcapacitymin') capMin = val;
+                if (cleanName === 'hdrcapacitymax') capMax = val;
+                // 古い属性形式への対応
+                if (cleanName === 'gainmapmin') gainMapMin = [val, val, val];
+                if (cleanName === 'gainmapmax') gainMapMax = [val, val, val];
+              }
+            }
+          }
+        }
       }
 
-      const minVal = getAttr('GainMapMin', 0.0);
-      const maxVal = getAttr('GainMapMax', 1.0);
-      const gammaVal = getAttr('Gamma', 1.0);
-      const offsetSdrVal = getAttr('OffsetSDR', 0.015625);
-      const offsetHdrVal = getAttr('OffsetHDR', 0.015625);
-      const capMin = getAttr('HDRCapacityMin', 0.0);
-      const capMax = getAttr('HDRCapacityMax', 1.0);
-
+      // XMPが後方（2枚目）にあるデータを優先して上書きするため、最終的な値が正確になる
       return {
-        gainMapMin: [minVal, minVal, minVal],
-        gainMapMax: [maxVal, maxVal, maxVal],
-        gamma: [gammaVal, gammaVal, gammaVal],
-        offsetSdr: [offsetSdrVal, offsetSdrVal, offsetSdrVal],
-        offsetHdr: [offsetHdrVal, offsetHdrVal, offsetHdrVal],
+        gainMapMin,
+        gainMapMax,
+        gamma,
+        offsetSdr,
+        offsetHdr,
         hdrCapacityMin: Math.pow(2, capMin),
         hdrCapacityMax: Math.pow(2, capMax)
       };
@@ -889,7 +936,9 @@
 
               // ISO 21496-1 / UltraHDR True HDR Reconstruction with Display Adaptation (Weight):
               let weight = p.misc.z;
-              let gainMapped = pow(max(gainRGB, vec3f(0.0)), gammaVal);
+              //let gainMapped = pow(max(gainRGB, vec3f(0.0)), gammaVal);
+              // ISO 21496-1仕様に従い、ガンマの逆数（1.0 / gammaVal）でデコードする
+              let gainMapped = pow(max(gainRGB, vec3f(0.0)), vec3f(1.0) / gammaVal);
               let logBoost = mix(gMin, gMax, gainMapped);
               let actualLogBoost = logBoost * weight;
               let sdrAdjusted = sdrLinear.rgb + oSdr;
