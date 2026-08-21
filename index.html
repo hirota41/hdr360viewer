@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
   <meta charset="utf-8" />
-  <title>HDR360 Viewer</title>
+  <title>HDR360 Viewer V2</title>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <style>
     html,body{height:100%;margin:0;overflow:hidden;touch-action:none;}
@@ -709,6 +709,27 @@
     const loader = new RGBELoader();
 
     async function loadHDR(file) {
+      // 古いパイプラインリソースが残っていればVRAMから即時解放
+      if (activePipelineInfo) {
+        if (activePipelineInfo.bindGroup) {
+          // bindGroup自体は破棄メソッドを持たないが、参照を切る
+          activePipelineInfo.bindGroup = null; 
+        }
+        if (activePipelineInfo.paramsBuffer) {
+          activePipelineInfo.paramsBuffer.destroy();
+        }
+        if (activePipelineInfo.baseTexture) {
+          activePipelineInfo.baseTexture.destroy();
+        }
+        if (activePipelineInfo.gainMapTexture) {
+          activePipelineInfo.gainMapTexture.destroy();
+        }
+        if (activePipelineInfo.hdrTexture) {
+          activePipelineInfo.hdrTexture.destroy();
+        }
+        activePipelineInfo = null;
+      }
+
 
       const fileName = file.name.toLowerCase();
       const isHDR = fileName.endsWith('.hdr');
@@ -817,20 +838,86 @@
         activePipelineInfo = { pipeline, bindGroup, paramsBuffer, type: 'hdr' };
       } else {
         // --- Strategy B: UltraHDR / SDR JPEG Loading with Fallback ---
-        setStatus('Parsing UltraHDR JPEG container & ISO 21496-1 metadata...');
-        const arrayBuffer = await file.arrayBuffer();
-        const rawBytes = new Uint8Array(arrayBuffer);
+        setStatus('Parsing...');
+        let arrayBuffer = await file.arrayBuffer(); // const から let へ変更
+        let rawBytes = new Uint8Array(arrayBuffer); // const から let へ変更
 
         const parsed = parseUltraHDR(rawBytes);
         const hasGainMap = parsed.isUltraHDR && parsed.gainMapBytes !== null;
         const metadata = parsed.metadata;
 
-        console.log('Parsed UltraHDR:', { hasGainMap, metadata });
+        function getJpegDimensions(bytes) {
+          let i = 0;
+          while (i < bytes.length - 8) {
+            if (bytes[i] === 0xFF) {
+              const marker = bytes[i + 1];
+              // SOF0 (0xC0) または SOF2 (0xC2) が画像の寸法情報を持つ
+              if (marker === 0xC0 || marker === 0xC2) {
+                return {
+                  height: (bytes[i + 5] << 8) | bytes[i + 6],
+                  width: (bytes[i + 7] << 8) | bytes[i + 8]
+                };
+              }
+              // マーカーのペイロードをスキップ
+              const len = (bytes[i + 2] << 8) | bytes[i + 3];
+              i += 2 + len;
+            } else {
+              i++;
+            }
+          }
+          return null;
+        }
+      
+        // ==========================================
+        // loadHDR 関数内の修正箇所（施策3の後）
+        // ==========================================
 
+        // 2. パース結果からBlobを生成
+        const sdrBlob = new Blob([parsed.sdrBytes], { type: 'image/jpeg' });
+        const gainBlob = hasGainMap ? new Blob([parsed.gainMapBytes], { type: 'image/jpeg' }) : null;
+
+        // 3. デコード前に元画像の解像度を抽出
+        const origDims = getJpegDimensions(parsed.sdrBytes);
+        const origWidth = origDims ? origDims.width : 0;
+
+        // 4. 参照を即時切断（兵站の解放）
+        parsed.sdrBytes = null;
+        parsed.gainMapBytes = null;
+        rawBytes = null;
+        arrayBuffer = null;
+
+        // 5. OS環境の判定（iOS / iPadOSであるか）
+        const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || 
+                      (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
+        // 6. デバイスの論理的な上限値（WebGPUの上限）
+        let maxAllowedDim = device.limits.maxTextureDimension2D;
+
+        // iOSの場合はOSのOOMキラーを回避するため、物理的な安全上限（8192）でクランプする
+        if (isIOS) {
+          setStatus('iOS detected: limiting texture up to 8k.');
+          maxAllowedDim = Math.min(maxAllowedDim, 8192);
+        }
+
+        // 7. リサイズを適用すべきか判定（原寸が上限を超えている場合のみ）
+        let sdrOptions = {};
+        let gainMapOptions = { colorSpaceConversion: 'none' };
+
+        if (origWidth > maxAllowedDim) {
+          sdrOptions.resizeWidth = maxAllowedDim;
+          sdrOptions.resizeQuality = 'high';
+          
+          gainMapOptions.resizeWidth = maxAllowedDim;
+          gainMapOptions.resizeQuality = 'high';
+          
+          console.log(`[Resolution Adjusted] Original width ${origWidth} exceeds limit ${maxAllowedDim}. Resizing applied.`);
+        }
+
+        // 8. 非同期デコードの実行（必要な場合のみ縮小処理が介入する）
         const [sdrImageBitmap, gainMapImageBitmap] = await Promise.all([
-          createImageBitmap(new Blob([parsed.sdrBytes], { type: 'image/jpeg' })),
+          createImageBitmap(sdrBlob, sdrOptions),
           hasGainMap
-            ? createImageBitmap(new Blob([parsed.gainMapBytes], { type: 'image/jpeg' }), { colorSpaceConversion: 'none' })
+            ? createImageBitmap(gainBlob, gainMapOptions)
             : Promise.resolve(null)
         ]);
 
@@ -1006,7 +1093,7 @@
         setStatus('• Format: Radiance HDR');
       } else if (activePipelineInfo.hasGainMap) {
         const capMax = activePipelineInfo.metadata?.hdrCapacityMax || 6.0;
-        setStatus(`• Format: UltraHDR JPEG (ISO 21496-1 Gain Map)\n• Max Boost: ${capMax.toFixed(2)}x (Content Max Capacity)`);
+        setStatus(`• Format: UltraHDR JPEG: ${capMax.toFixed(2)}x`);
       } else {
         setStatus('• Format: Standard SDR JPEG');
       }
